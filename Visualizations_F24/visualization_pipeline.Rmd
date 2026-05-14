@@ -1,0 +1,194 @@
+---
+title: "visualization_pipeline"
+output: pdf_document
+date: "2024-06-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+
+
+```{r}
+# imports
+library(ggplot2)
+library(gggenomes)
+
+library(ggtree)
+library(cowplot)
+library(aplot)
+```
+
+```{r}
+full_tree <- ape::read.tree("/workdir/maa367/Oct2022_tree.tree")
+text<-write.tree(full_tree)
+text
+
+strip.nodelabels<-function(text){
+    obj<-strsplit(text,"")[[1]]
+    cp<-grep(")",obj)
+    csc<-c(grep(":",obj),length(obj))
+    exc<-cbind(cp,sapply(cp,function(x,y) y[which(y>x)[1]],y=csc))
+    exc<-exc[(exc[,2]-exc[,1])>1,]
+    inc<-rep(TRUE,length(obj))
+    if(nrow(exc)>0) for(i in 1:nrow(exc)) 
+        inc[(exc[i,1]+1):(exc[i,2]-1)]<-FALSE
+    paste(obj[inc],collapse="")
+}
+q <- strip.nodelabels(text)
+
+
+```
+
+```{r}
+foo<-function(text){
+    tree<-read.tree(text=text)
+    tree$node.label<-NULL
+    write.tree(tree)
+}
+text<-write.tree(full_tree)
+p <- foo(text)
+full_tree <- ape::read.tree("/workdir/maa367/nonode.tree.rtf")
+
+```
+
+```{r }
+tree <- ape::read.tree("/workdir/maa367/Oct2022_tree.tree")
+# Create a tree with tip labels only
+make_tree <- ggtree(tree, branch.length = 'none') + geom_tiplab(linetype = 'dotted', size = 1.5)
+
+x <- paste("Taxa order:", 
+        paste0(get_taxa_name(make_tree), collapse=', '))
+
+
+ggsave("tree.png", make_tree, width = 12, height = 30, dpi = 300)
+```
+
+
+``` {r}
+library(ggtree)
+library(ape)
+
+# Read the tree
+full_tree <- ape::read.tree("/workdir/maa367/Oct2022_tree.tree")
+
+# Make the tree easier to see
+make_tree <- ggtree(full_tree, branch.length = "none", layout = "rectangular") +
+  geom_tiplab(size = 2.5, align = TRUE, linetype = "dashed") +  # Adjust label size and alignment
+    # Extends space for labels; adjust value as needed
+
+make_tree
+
+```
+
+```{r}
+#visualization
+
+
+m0 <- read.table(file = "sxl/combined500sxl.csv", sep = '\t', header = TRUE)
+m0$seqID[1:4] <- "Dana" 
+m0$seqID[5:8] <- "Dmel"
+m0$seqID[9:12] <- "Dvir"
+colnames(m0)[1] <- "seq_id"
+m0$width <- rep(6, times = nrow(m0))
+l0 <- read.csv("/workdir/maa367/figure_data - seq (2).csv")
+
+q <- gggenomes(m0, l0) +
+  geom_seq() +
+  geom_seq_label() +
+  scale_x_reverse() +
+  geom_gene(aes(fill = patternName), position = "strand") +
+  theme(axis.title.x = element_text(size = 8)) +
+  labs(x = "Bases from Gene Start Site", ) + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle("sxl")
+q
+
+```
+
+```{r}
+#SXL visualization 
+
+m0 <- read.table(file = "sxl/combined5000sxl.csv", sep = '\t', header = TRUE)
+m0$seqID[1:23] <- "Dana"
+m0$seqID[24:41] <- "Dmel"
+m0$seqID[42:63] <- "Dvir"
+colnames(m0)[1] <- "seq_id"
+m0$width <- rep(6, times = nrow(m0))
+l0 <- read.csv("/workdir/maa367/figure_data - seq5000 (2).csv")
+
+p <- gggenomes(m0, l0) +
+  geom_seq() +
+  geom_seq_label() +
+  scale_x_reverse() +
+  geom_gene(aes(fill = patternName, color = patternName), shape = 0, position = "strand", size = 3) +
+  theme(axis.title.x = element_text(size = 8)) +
+  labs(x = "Bases from Gene Start Site") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle("sxl")
+
+p
+
+```
+
+
+```{r }
+#full_tree_vis %>% insert_right(p)
+
+cowplot::plot_grid(full_tree_vis, q, ncol = 2, rel_widths = c(1,2))
+cowplot::plot_grid(full_tree_vis, p, ncol = 2, rel_widths = c(1,2))
+bind_rows
+
+```
+
+
+```{r}
+#SNA visualization
+
+m0 <- read.table(file = "sna/combined500sna.csv", sep = '\t', header = TRUE)
+m0$seqID[1:2] <- "Dana"
+m0$seqID[3:4] <- "Dmel"
+m0$seqID[5:11] <- "Dpse"
+m0$seqID[12:16] <- "Dvir"
+colnames(m0)[1] <- "seq_id"
+m0$width <- rep(6, times = nrow(m0))
+l0 <- read.csv("/workdir/maa367/figure_data - seq (2).csv")
+
+p <- gggenomes(m0, l0) +
+  geom_seq() +
+  geom_seq_label() +
+  scale_x_reverse() +
+  geom_gene(aes(fill = matched), position = "strand") +
+  theme(axis.title.x = element_text(size = 8)) +
+  labs(x = "Bases from Gene Start Site") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle("sna")
+p
+
+```
+
+```{r}
+#SNA visualization
+
+m0 <- read.table(file = "sna/combined5000sna.csv", sep = '\t', header = TRUE)
+m0$seqID[1:17] <- "Dana"
+m0$seqID[18:35] <- "Dmel"
+m0$seqID[36:62] <- "Dpse"
+m0$seqID[63:85] <- "Dvir"
+colnames(m0)[1] <- "seq_id"
+m0$width <- rep(6, times = nrow(m0))
+l0 <- read.csv("/workdir/maa367/figure_data - seq5000 (2).csv")
+
+p <- gggenomes(m0, l0) +
+  geom_seq() +
+  geom_seq_label() +
+  scale_x_reverse() +
+  geom_gene(aes(fill = patternName, color = patternName), shape = 0, position = "strand", size = 3) +
+  theme(axis.title.x = element_text(size = 8)) +
+  labs(x = "Bases from Gene Start Site") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle("sna")
+p
+
+```
+
