@@ -1,3 +1,17 @@
+# TAGteam Binary Data Processing and D-Statistic Pipeline
+# -------------------------------------------------------
+# Purpose:
+#   1. Load transcript-level TAGteam binary data.
+#   2. Map transcript IDs to gene IDs.
+#   3. Convert the data to wide format with species as rows and genes as columns.
+#   4. Identify and compress species/gene cells with multiple transcript values.
+#   5. Save both the original wide data and compressed wide data as CSV files.
+#   6. Run D-statistic analyses to test phylogenetic signal.
+#   7. Generate summary plots, heatmaps, tree PDFs, and candidate-gene rankings.
+#
+# Notes:
+#   - File paths may need to be updated if this script is moved to another computer.
+
 # Loading External Libraries
 
 library(dplyr)
@@ -7,29 +21,66 @@ library(ape)
 library(caper)
 library(stringr)
 library(ggplot2)
-library(ape)
 library(phytools)
 library(geiger)
+library(pheatmap)
+
+# Create output folders before saving plots/files.
+# This prevents errors if the folders do not already exist.
+dir.create("out.dir", showWarnings = FALSE, recursive = TRUE)
+dir.create(file.path("out.dir", "trees"), showWarnings = FALSE, recursive = TRUE)
+
+# Helper function used only for saving wide data frames as CSVs.
+# pivot_wider() can create list-columns when a species/gene combination has
+# more than one transcript value. Base write.csv() cannot save list-columns
+# directly, so this converts each cell to a readable character value.
+make_csv_safe <- function(df) {
+  df[] <- lapply(df, function(col) {
+    if (is.list(col)) {
+      sapply(col, function(x) {
+        if (is.null(x)) {
+          return(NA_character_)
+        }
+        paste(unlist(x), collapse = ";")
+      })
+    } else {
+      col
+    }
+  })
+  df
+}
 
 # Load in binary data file
+# This file contains transcript-level TAGteam binary.
 binary_data <- read.csv("/local/workdir/maa367/d_statistic/tagteam-binary-df-rbbpass_full.csv")
 
-#load in mapping file
+# Load in mapping file of transcript ID to gene ID.
+# This lets transcript-level binary values be grouped by gene.
 txid_gnid <-read.table("/local/workdir/maa367/d_statistic/txid_gnid_dictionary.fasta", header = FALSE, sep = "\t",
                                    col.names = c("txid", "gnid"))
 
-# map transcript to gene id
+# Map each transcript ID in the binary dataset to its corresponding gene ID.
 binary_data_mapped <- binary_data %>%
   left_join(txid_gnid, by = "txid") 
 
-# change binary data to wide format
+# Change binary data to wide format.
+# Rows = species; columns = genes; values = TAGteam binary.
 binary_data_wide <- binary_data_mapped %>%
   dplyr::select(gnid, species, tagteam.binary) %>%
   pivot_wider(names_from = gnid, values_from = tagteam.binary)
 
-# identify transcript names
+# Save the original wide-format binary data before any compression.
+# This creates a record of the data immediately after transcript IDs are mapped to genes.
+write.csv(
+  make_csv_safe(binary_data_wide),
+  "binary_data_wide_original.csv",
+  row.names = FALSE
+)
+
+# Identify transcript names
 gene_cols <- setdiff(names(binary_data_wide), "species")
 
+# Summary table to track where species/gene cells contain multiple transcript values.
 summary_n <- data.frame(
   species = gene_cols,
   n_multivectors = rep(NA, length(gene_cols)),
@@ -38,18 +89,28 @@ summary_n <- data.frame(
 )
 
 
+# Compression rule for multiple transcript values in one species/gene cell.
+# If any transcript has a TAGteam motif coded as 1, the whole gene/species cell becomes 1.
+# If all available transcript values are 0, the compressed value becomes 0.
 any1 <- function(v) {
   v <- v[!is.na(v)]
   if (length(v) == 0) return(NA_integer_)
   as.integer(any(v == 1))
 }
 
+# Keep copies of the wide data.
+# binary_data_wide remains the original wide-format object.
+# binary_data_wide1 will be compressed so multi-transcript cells become one value.
+# binary_data_wide2 is kept as an extra backup copy if needed later.
 binary_data_wide1 <- binary_data_wide
 binary_data_wide2 <- binary_data_wide
 
+# Loop through each gene column and compress any species/gene cells
+# that contain multiple transcript-level binary values.
+# Loop through each gene and calculate Fritz and Purvis' D-statistic.
 for (i in seq_along(gene_cols)) {
   g <- gene_cols[i]
-  
+
   cells <- lapply(binary_data_wide1[[g]], function(x) if (is.null(x)) NA else x)
   lens <- lengths(cells)
   is_multi <- lens >= 2
@@ -70,8 +131,20 @@ for (i in seq_along(gene_cols)) {
   }
 }
 
+# Save the compressed wide-format binary data.
+# This is the version used for downstream D-statistic analysis.
+write.csv(
+  make_csv_safe(binary_data_wide1),
+  "binary_data_wide_compressed.csv",
+  row.names = FALSE
+)
 
-# helper functions
+# Save a summary of how often multiple transcript values appeared
+# and how often those values disagreed within a species/gene cell.
+write.csv(summary_n, "binary_data_compression_summary.csv", row.names = FALSE)
+
+
+# Helper functions for summarizing list-cells with multiple transcript values
 vec_length <- function(x) {
   if (is.null(x)) return(NA_integer_)
   length(x)
@@ -85,11 +158,11 @@ vec_mean01 <- function(x) {
   mean(x)
 }
 
-# objects to collect info across all genes
+# Objects to collect vector-length and vector-mean information across all genes
 all_vector_lengths <- c()
 all_vector_means   <- c()
 
-# optional: per-gene summary table
+# Per-gene summary table for multi-transcript cells
 vector_summary <- data.frame(
   gene = gene_cols,
   n_vectors = NA_integer_,
@@ -114,10 +187,11 @@ for (i in seq_along(gene_cols)) {
     if (is.null(x)) return(0L)
     length(x)
   })
-  print(lens)
-  
+  # Uncomment these lines for debugging if you want to inspect each gene:
+  # print(lens)
+
   is_multi <- lens >= 2
-  print(is_multi)
+  # print(is_multi)
   
   # lengths of all multi-value vectors in this gene column
   these_lengths <- lens[is_multi]
@@ -149,8 +223,9 @@ summary(all_vector_lengths)
 # overall summary of vector means
 summary(unlist(all_vector_means))
 
-h <- hist(unlist(all_vector_means))
-hist(vector_summary$mean_of_vector_means)
+# Save multi-transcript summaries for documentation.
+write.csv(vector_summary, "multi_transcript_vector_summary_by_gene.csv", row.names = FALSE)
+write.csv(make_csv_safe(vector_means), "multi_transcript_vector_means_by_species_gene.csv", row.names = FALSE)
 
 
 # Histogram ---------------------------------------------------------------
@@ -198,18 +273,19 @@ ggsave(
 # D-statistics ------------------------------------------------------------
 
 
-#species names
+# Species names present in the compressed wide-format binary data
 species_names <- binary_data_wide1$species
-# read the tree file
+# Read the phylogenetic tree file
 tree <- read.tree("/local/workdir/maa367/d_statistic/hog_tree.nw")
-# modify tip labels to match wide data file
+# Modify tree tip labels to match the species naming format in the wide data file.
 tree$tip.label <- sub("^([A-Z])[A-Z]+_(.*)$", "\\1_\\L\\2", tree$tip.label, perl = TRUE)
 
-#drop species that are'nt in both trees
+# Drop species that are not present in both the tree and the binary dataset.
 drop <- symdiff(tree$tip.label, species_names)
 tree <- drop.tip(tree, drop)
 
 
+# Initialize results table for D-statistic output.
 results <- data.frame(
   gene       = gene_cols,
   D          = NA_real_,
@@ -226,12 +302,12 @@ for (i in seq_along(gene_cols)) {
   g <- gene_cols[i]
   missing_species <- binary_data_wide1$species[ binary_data_wide1[[g]] == "NULL" ]
   
-  #print("tree modification")
+  # Identify species with missing data for this gene and prune them from the tree.
   tips_to_drop <- intersect(missing_species, tree$tip.label)
   tree_sub <- if (length(tips_to_drop)) drop.tip(tree, tips_to_drop) else tree
   #pruned_trees[[g]] <- tree_sub
   
-  #print("file mod")
+  # Build a two-column data frame for this gene: species and binary trait value.
   dat_g <- binary_data_wide1[, c("species", g)]
   names(dat_g) <- c("species", "binary")
   dat_g$binary[dat_g$binary == "NULL"] <- NA
@@ -239,19 +315,19 @@ for (i in seq_along(gene_cols)) {
   dat_g$binary <- as.integer(dat_g$binary)
   dat_g <- as.data.frame(dat_g, stringsAsFactors = FALSE)
   
-  #print("safety check")
+  # Safety checks: skip genes with too few species or no variation in the binary trait.
   n_sp <- nrow(dat_g)
   n1   <- sum(dat_g$binary == 1)
   n0   <- sum(dat_g$binary == 0)
   
-  #print("blank if")
+  # Skip genes that cannot be used for D-statistic testing.
   if (n_sp < 4 || n1 == 0 || n0 == 0) {
     results[i, c("D","P_random","P_brownian","n","n1","n0","status")] <-
       list(NA_real_, NA_real_, NA_real_, n_sp, n1, n0, "skipped")
     next
   }
   
-  #print("comp")
+  # Combine the gene data and pruned tree into a comparative.data object.
   comp <- comparative.data(
     phy = tree_sub,
     data = dat_g,
@@ -261,7 +337,7 @@ for (i in seq_along(gene_cols)) {
   )
 
   
-  #print("d stat")
+  # Calculate the D-statistic and associated p-values.
   dres <- phylo.d(comp, binvar = binary)
   
   results[i, c("D","P_random","P_brownian","n","n1","n0","status")] <-
@@ -274,225 +350,20 @@ for (i in seq_along(gene_cols)) {
 
 
 
-# multiple testing corrections
+# Multiple testing corrections for the D-statistic p-values.
 results$p_adjustp <- p.adjust(results$P_random, "fdr")
 results$p_adjustb <- p.adjust(results$P_brownian, "fdr")
 results$n_prop <- results$n/300
 
-# add proportion of species with trait 1
+# Add proportion of species with trait 1
 results$n1_prop <- results$n1/results$n
 
-#sort by -log(p random)
-heat_binned_sorted <- heat_binned[order(-heat_binned$mean_neglogp), ]
-
-library(dplyr)
-
-heat_binned_sorted <- heat_binned_sorted %>%
-  mutate(
-    prop_chr    = as.character(prop_bin),
-    species_chr = as.character(species_bin),
-    
-    # extract all numeric substrings from each interval
-    prop_nums    = lapply(prop_chr,    function(s) regmatches(s, gregexpr("[0-9.]+", s))[[1]]),
-    species_nums = lapply(species_chr, function(s) regmatches(s, gregexpr("[0-9.]+", s))[[1]]),
-    
-    # lower and upper bounds = first and second numbers
-    prop_lower    = as.numeric(vapply(prop_nums,    `[`, 1L, FUN.VALUE = character(1))),
-    prop_upper    = as.numeric(vapply(prop_nums,    `[`, 2L, FUN.VALUE = character(1))),
-    species_lower = as.numeric(vapply(species_nums, `[`, 1L, FUN.VALUE = character(1))),
-    species_upper = as.numeric(vapply(species_nums, `[`, 2L, FUN.VALUE = character(1)))
-  ) %>%
-  dplyr::select(-prop_chr, -species_chr, -prop_nums, -species_nums)
-
-#create emtpy list
-vis_species <- c()  
-
-for (i in seq_len(nrow(heat_binned_sorted))) {
-  results_sorted1 <- results_new %>%
-    filter(
-      D < 0,
-      p_adjustp < 0.05,
-      n >= heat_binned_sorted$species_lower[i],
-      n <  heat_binned_sorted$species_upper[i],
-      n1_prop >  heat_binned_sorted$prop_lower[i], 
-      n1_prop <= heat_binned_sorted$prop_upper[i]
-    )
-  
-  vis_species <- c(vis_species, results_sorted1$gene)
-}
-
-
-
-# Few Gene pdf ------------------------------------------------------------
-
-
-passed_genes <- c("FBgn0003448", "FBgn0004053", "FBgn0004170", "FBgn0001320", "FBgn0000606", "FBgn0004143", "FBgn0010109", 
-                  "FBgn0003510", "FBgn0001180", "FBgn0264270", "FBgn0000490", "FBgn0001168", "FBgn0002985")
-names_passed <- c("sna", "zen", "scute", "kni", "eve", "nullo", "dpn", "sry-a", "hb", "sxl", "dpp", "hry", "odd") 
-i <- 0
-for (g in passed_genes[1:13]) {
-  i <- i + 1
-  # 1. Raw values for this gene (list of NULL / 0 / 1)
-  vals_raw <- binary_data_wide1[[g]]
-  
-  # 2. Identify species with NULL (to drop)
-  is_null <- sapply(vals_raw, is.null)
-  missing_species <- binary_data_wide1$species[is_null]
-  tips_to_drop    <- intersect(missing_species, tree$tip.label)
-  
-  # 3. Drop those tips from the tree
-  tree2 <- if (length(tips_to_drop) > 0) drop.tip(tree, tips_to_drop) else tree
-  
-  # 4. Turn vals_raw into a numeric vector (0/1/NA)
-  vals_vec <- sapply(vals_raw, function(x) if (is.null(x)) NA_real_ else as.numeric(x))
-  
-  # 5. Reorder values to match the tips of tree2
-  vals <- vals_vec[match(tree2$tip.label, binary_data_wide1$species)]
-  
-  # 6. Build a color vector: red for 0, blue for 1, grey for NA (if any)
-  cols <- ifelse(is.na(vals), "grey70",
-                 ifelse(vals == 1, "blue", "red"))
-  
-  # 7. Get D for this gene from results
-  D_g <- results$D[results$gene == g]   # change 'gene' to the right col name if needed
-  
-  n_tips <- length(tree2$tip.label)
-  tip_cex <- min(0.3, 0.5 / log10(n_tips)) 
-  
-  # 8. Open a high-resolution pdf device
-  pdf(
-    file   = file.path("out.dir/trees", paste0("tree_1", names_passed[i], ".pdf")),
-    width  = 7,   # inches
-    height = 7
-  )
-  
-  # 9. Plot the tree: species-only labels, colored by trait, D in title
-  plot(
-    tree2,
-    tip.color = cols,
-    cex = tip_cex,
-    main = paste0("Tree for ", names_passed[i], "   (D = ", round(D_g, 7), ")")
-  )
-  
-  legend(
-    "topleft",
-    legend = c("Trait = 0", "Trait = 1"),
-    col = c("red", "blue"),
-    pch = 19,
-    pt.cex = 1.2,
-    bty = "n"     # no legend box
-  )
-  
-  dev.off()
-}
-
-
-# All gene pdf -----------------------------------------------------------------
-
-gene_names <- read.csv("genes - Sheet1 (3).csv")
-
-negative_d <- negative_d %>%
-  left_join(gene_names, by = "gene")
-
-ordered_genes_n1prop <- negative_d %>%
-  arrange(desc(n1_prop)) %>%
-  dplyr::select(gene, symbol.x)
-ordered_genes_pval <- negative_d %>%
-  arrange(p_adjustp) %>%
-  dplyr::select(gene, symbol.x)
-ordered_genes_D <- negative_d %>%
-  arrange(D) %>%
-  dplyr::select(gene, symbol.x)
-
-library(ape)
-
-pdf(
-  file = file.path("out.dir/trees", "all_gene_trees_D.pdf"),
-  width = 7,
-  height = 7
-)
-
-ordered_gene_ids <- ordered_genes_D$gene
-
-
-for (i in seq_along(ordered_gene_ids)) {
-  
-  g <- ordered_gene_ids[i]
-  symbol_g <- ordered_genes_D$symbol.x[i]
-  
-  vals_raw <- binary_data_wide1[[g]]
-  
-  is_null <- sapply(vals_raw, is.null)
-  missing_species <- binary_data_wide1$species[is_null]
-  tips_to_drop <- intersect(missing_species, tree$tip.label)
-  
-  tree2 <- if (length(tips_to_drop) > 0) drop.tip(tree, tips_to_drop) else tree
-  
-  vals_vec <- sapply(vals_raw, function(x) {
-    if (is.null(x)) NA_real_ else as.numeric(x)
-  })
-  
-  vals <- vals_vec[match(tree2$tip.label, binary_data_wide1$species)]
-  
-  cols <- ifelse(is.na(vals), "grey70",
-                 ifelse(vals == 1, "blue", "red"))
-  
-  D_g <- results$D[results$gene == g]
-  P <- results$p_adjustp[results$gene == g]
-  
-  n_tips <- length(tree2$tip.label)
-  tip_cex <- min(0.3, 0.5 / log10(n_tips))
-  
-  plot(
-    tree2,
-    tip.color = cols,
-    cex = tip_cex,
-    main = paste0("Tree for ", symbol_g, "   (D = ", round(D_g, 7), ") (P = ", round(P, 6), ")")
-  )
-  
-  legend(
-    "topleft",
-    legend = c("Trait = 0", "Trait = 1"),
-    col = c("red", "blue"),
-    pch = 19,
-    pt.cex = 1.2,
-    bty = "n"
-  )
-}
-
-dev.off()
-
-
-
-# Prioritization --------------------------------------------------------------
-
-top_n <- 600
-
-top_n1prop <- ordered_genes_n1prop %>%
-  dplyr::slice_head(n = top_n) %>%
-  dplyr::pull(symbol.x)
-
-top_D <- ordered_genes_D %>%
-  dplyr::slice_head(n = top_n) %>%
-  dplyr::pull(symbol.x)
-
-top_in_all_3 <- Reduce(intersect, list(top_n1prop, top_D))
-
-top_in_all_3_df <- data.frame(symbol.x = top_in_all_3)
-
-top_in_all_3_df
-
-
-ranked_genes <- negative_d %>%
-  dplyr::mutate(
-    rank_D = rank(D, ties.method = "average"),
-    rank_n1 = rank(-n1_prop, ties.method = "average"),
-    
-    combined_rank = (rank_D + rank_n1)/2
-  ) %>%
-  dplyr::arrange(combined_rank)
+# Save results as csv file
+write.csv(results, "D_stat_results.csv", row.names = FALSE)
 
 # Heatmap -----------------------------------------------------------------
+# Visualize where strong phylogenetic signal tends to occur across species-count
+# and motif-presence proportion bins.
 
 # Filter only genes that passed
 results_new <- results %>%
@@ -511,11 +382,7 @@ write.table(negative_d$gene,
             sep = ",",
             quote = FALSE)
 
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(pheatmap)
-
+# eps is kept here in case you want to use a smaller p-value floor later.
 eps <- 1e-300 
 
 heat_binned <- results_new %>%
@@ -551,7 +418,7 @@ heat_wide <- heat_binned %>%
     values_from = mean_neglogp
   )
 
-# ORDERING FUNCTIONS 
+# Ordering function used to sort binned interval labels numerically.
 extract_lower <- function(x) {
   x_num <- sub("^\\(|^\\[", "", x)  # remove leading ( or [
   x_num <- sub(",.*", "", x_num)    # keep everything before first comma
@@ -597,212 +464,250 @@ dev.off()
 
 
 
-# Pagel's Lambda -----------------------------------------------------------
-
-library(geiger)
-
-library(geiger)
-library(dplyr)
-library(purrr)
+# Few Gene pdf ------------------------------------------------------------
+# Plot selected candidate genes as individual tree PDFs.
 
 
-lambda_results <- data.frame(
-  gene   = gene_cols,
-  lambda = NA_real_,
-  loglik = NA_real_,
-  n      = NA_integer_,
-  n1     = NA_integer_,
-  n0     = NA_integer_,
-  status = NA_character_,
-  stringsAsFactors = FALSE
+passed_genes <- c("FBgn0003448", "FBgn0004053", "FBgn0004170", "FBgn0001320", "FBgn0000606", "FBgn0004143", "FBgn0010109", 
+                  "FBgn0003510", "FBgn0001180", "FBgn0264270", "FBgn0000490", "FBgn0001168", "FBgn0002985")
+names_passed <- c("sna", "zen", "scute", "kni", "eve", "nullo", "dpn", "sry-a", "hb", "sxl", "dpp", "hry", "odd") 
+i <- 0
+for (g in passed_genes[1:13]) {
+  i <- i + 1
+  # Raw values for this gene (list of NULL / 0 / 1)
+  vals_raw <- binary_data_wide1[[g]]
+  
+  # Identify species with NULL (to drop)
+  is_null <- sapply(vals_raw, is.null)
+  missing_species <- binary_data_wide1$species[is_null]
+  tips_to_drop    <- intersect(missing_species, tree$tip.label)
+  
+  # Drop those tips from the tree
+  tree2 <- if (length(tips_to_drop) > 0) drop.tip(tree, tips_to_drop) else tree
+  
+  # Turn vals_raw into a numeric vector (0/1/NA)
+  vals_vec <- sapply(vals_raw, function(x) if (is.null(x)) NA_real_ else as.numeric(x))
+  
+  # Reorder values to match the tips of tree2
+  vals <- vals_vec[match(tree2$tip.label, binary_data_wide1$species)]
+  
+  # Build a color vector: red for 0, blue for 1, grey for NA (if any)
+  cols <- ifelse(is.na(vals), "grey70",
+                 ifelse(vals == 1, "blue", "red"))
+  
+  # Get D for this gene from results
+  D_g <- results$D[results$gene == g]   # change 'gene' to the right col name if needed
+  
+  n_tips <- length(tree2$tip.label)
+  tip_cex <- min(0.3, 0.5 / log10(n_tips)) 
+  
+  # Open a high-resolution pdf device
+  pdf(
+    file   = file.path("out.dir/trees", paste0("tree_1", names_passed[i], ".pdf")),
+    width  = 7,   # inches
+    height = 7
+  )
+  
+  # Plot the tree: species-only labels, colored by trait, D in title
+  plot(
+    tree2,
+    tip.color = cols,
+    cex = tip_cex,
+    main = paste0("Tree for ", names_passed[i], "   (D = ", round(D_g, 7), ")")
+  )
+  
+  legend(
+    "topleft",
+    legend = c("Trait = 0", "Trait = 1"),
+    col = c("red", "blue"),
+    pch = 19,
+    pt.cex = 1.2,
+    bty = "n"     # no legend box
+  )
+  
+  dev.off()
+}
+
+
+# All gene pdf -----------------------------------------------------------------
+# Plot all filtered candidate genes into one multi-page PDF, ordered by D-statistic.
+
+# Read in file containing gene IDs and corresponding gene symbols
+gene_names <- read.csv("genes - Sheet1 (3).csv")
+
+# Merge gene symbols into the negative_d dataframe using the gene column
+negative_d <- negative_d %>%
+  left_join(gene_names, by = "gene")
+
+# Create ranked dataframes based on different metrics:
+# 1. Highest proportion of 1s (n1_prop)
+ordered_genes_n1prop <- negative_d %>%
+  arrange(desc(n1_prop)) %>%
+  dplyr::select(gene, symbol.x)
+
+# 2. Lowest adjusted p-value
+ordered_genes_pval <- negative_d %>%
+  arrange(p_adjustp) %>%
+  dplyr::select(gene, symbol.x)
+
+# 3. Most negative D-statistic
+ordered_genes_D <- negative_d %>%
+  arrange(D) %>%
+  dplyr::select(gene, symbol.x)
+
+# Load ape package for phylogenetic tree visualization
+library(ape)
+
+# Open a PDF device to save all generated trees
+pdf(
+  file = file.path("out.dir/trees", "all_gene_trees_D.pdf"),
+  width = 7,
+  height = 7
 )
 
-species_all <- binary_data_wide$species  # tiny micro-optimization
+# Extract ordered list of gene IDs ranked by D-statistic
+ordered_gene_ids <- ordered_genes_D$gene
 
-for (i in seq_along(gene_cols)) {   # change to gene_cols when ready
+# Loop through every gene and generate a phylogenetic tree plot
+for (i in seq_along(ordered_gene_ids)) {
   
-  g <- gene_cols[i]
+  # Current gene ID
+  g <- ordered_gene_ids[i]
   
-  ## 1. Filter out "NULL"s for this gene
-  keep <- binary_data_wide[[g]] != "NULL"
+  # Corresponding gene symbol for labeling plots
+  symbol_g <- ordered_genes_D$symbol.x[i]
   
-  species_keep <- species_all[keep]
-  trait_raw    <- binary_data_wide[[g]][keep]   # "0"/"1"
+  # Extract binary trait values for the current gene across species
+  vals_raw <- binary_data_wide1[[g]]
   
-  ## basic counts
-  n_sp     <- length(trait_raw)
-  trait_num <- as.integer(trait_raw)           # 0/1
-  n1       <- sum(trait_num == 1L)
-  n0       <- sum(trait_num == 0L)
+  # Identify species with missing values (NULL entries)
+  is_null <- sapply(vals_raw, is.null)
   
-  ## skip if too few species or no variation
-  if (n_sp < 4 || n1 == 0 || n0 == 0) {
-    lambda_results[i, c("lambda","loglik","n","n1","n0","status")] <-
-      list(NA_real_, NA_real_, n_sp, n1, n0, "skipped")
-    next
-  }
+  # Get names of species missing data
+  missing_species <- binary_data_wide1$species[is_null]
   
-  ## 2. Recode to 1/2 (required by geiger)
-  trait_12 <- trait_num + 1L            # 1/2
-  names(trait_12) <- species_keep
+  # Find which missing species are present in the phylogenetic tree
+  tips_to_drop <- intersect(missing_species, tree$tip.label)
   
-  ## 3. Match tree to species with data
-  # we only need to drop species that *aren't* in species_keep
-  tips_to_drop <- setdiff(tree$tip.label, species_keep)
-  tree_sub <- if (length(tips_to_drop)) drop.tip(tree, tips_to_drop) else tree
+  # Remove species with missing data from the tree
+  # If no species are missing, use the original tree
+  tree2 <- if (length(tips_to_drop) > 0) drop.tip(tree, tips_to_drop) else tree
   
-  ## 4. Fit Pagel's lambda, catch errors
-  fit_lambda <- tryCatch(
-    fitDiscrete(tree_sub, trait_12,
-                model     = "ARD",
-                transform = "lambda"),
-    error = function(e) e
-  )
+  # Convert list-based binary values into a numeric vector
+  # NULL values become NA
+  vals_vec <- sapply(vals_raw, function(x) {
+    if (is.null(x)) NA_real_ else as.numeric(x)
+  })
   
-  # defaults
-  status_i   <- "ok"
-  lambda_val <- NA_real_
-  loglik_val <- NA_real_
+  # Reorder binary values so they match the order of species in the tree
+  vals <- vals_vec[match(tree2$tip.label, binary_data_wide1$species)]
   
-  if (inherits(fit_lambda, "error")) {
-    status_i <- "error_fit"
-  } else {
-    lambda_raw <- fit_lambda$opt$lambda
-    loglik_raw <- fit_lambda$opt$lnL
+  # Assign colors to trait values:
+  # blue = 1
+  # red = 0
+  # grey = missing/NA
+  cols <- ifelse(is.na(vals), "grey70",
+                 ifelse(vals == 1, "blue", "red"))
+  
+  # Extract D-statistic value for this gene
+  D_g <- results$D[results$gene == g]
+  
+  # Extract adjusted p-value for this gene
+  P <- results$p_adjustp[results$gene == g]
+  
+  # Dynamically scale tip label size based on tree size
+  # Larger trees get smaller labels
+  n_tips <- length(tree2$tip.label)
+  tip_cex <- min(0.3, 0.5 / log10(n_tips))
+  
+  # Plot phylogenetic tree with colored trait labels
+  plot(
+    tree2,
+    tip.color = cols,
+    cex = tip_cex,
     
-    # if value is NULL or empty, mark as error but still keep NA
-    if (is.null(lambda_raw) || length(lambda_raw) == 0 ||
-        is.null(loglik_raw) || length(loglik_raw) == 0) {
-      status_i <- "error_null"
-    } else {
-      lambda_val <- as.numeric(lambda_raw[1])
-      loglik_val <- as.numeric(loglik_raw[1])
-    }
-  }
-  
-  ## 5. Single write to results
-  lambda_results[i, c("lambda","loglik","n","n1","n0","status")] <-
-    list(lambda_val, loglik_val, n_sp, n1, n0, status_i)
-}
-
-lambda_results
-
-
-
-
-
-for (i in seq_along(gene_cols[500:505])) { 
-  
-  g <- gene_cols[i]
-  
-  # 1. Filter out NULLs for this gene
-  keep <- binary_data_wide[[g]] != "NULL"
-  
-  species_keep <- binary_data_wide$species[keep]
-  trait_raw    <- binary_data_wide[[g]][keep]   # probably "0"/"1" or 0/1
-  
-  # 2. Recode to 1/2 (required by geiger)
-  # if trait_raw is character "0"/"1":
-  trait_num <- as.numeric(trait_raw)         # 0/1
-  trait_12  <- trait_num + 1L                # 1/2
-  
-  # 3. Make named vector
-  trait <- setNames(trait_12, species_keep)
-  
-  # 4. Match tree to species with data
-  tips_to_drop <- setdiff(tree$tip.label, species_keep)
-  tree_sub <- if (length(tips_to_drop)) drop.tip(tree, tips_to_drop) else tree
-  
-  # 5. Fit Pagel's lambda
-  fit_lambda <- fitDiscrete(tree_sub, trait,
-                            model     = "ARD",
-                            transform = "lambda")
-  
-  print(fit_lambda$opt$lambda)
-  
-  print(fit_lambda$opt$lnL)
-  
-}
-
-
-
-
-
-
-lambda_results_list <- vector("list", length(gene_cols))
-idx <- 1  # separate index so we can `next` without leaving gaps
-
-for (i in seq_along(gene_cols[1:5])) { 
-  
-  g <- gene_cols[i]
-  
-  # 1. Filter out NULLs for this gene
-  keep <- binary_data_wide[[g]] != "NULL"
-  
-  species_keep <- binary_data_wide$species[keep]
-  trait_raw    <- binary_data_wide[[g]][keep]   # "0"/"1" or 0/1
-  
-  n_species    <- length(species_keep)
-  trait_num    <- as.numeric(trait_raw)         # 0/1
-  prop_present <- if (n_species > 0) mean(trait_num) else NA_real_
-  
-  # --- optional but good: skip bad cases early ---
-  # too few species or no variation → λ not identifiable / unstable
-  if (n_species < 10 || length(unique(trait_num)) < 2) {
-    next
-  }
-  
-  # 2. Recode to 1/2 (required by geiger)
-  trait_12  <- trait_num + 1L                # 1/2
-  
-  # 3. Make named vector
-  trait <- setNames(trait_12, species_keep)
-  
-  # 4. Match tree to species with data
-  tips_to_drop <- setdiff(tree$tip.label, species_keep)
-  tree_sub <- if (length(tips_to_drop)) drop.tip(tree, tips_to_drop) else tree
-  
-  # 5. Fit Pagel's lambda, but *catch errors*
-  fit_lambda <- tryCatch(
-    fitDiscrete(tree_sub, trait,
-                model     = "ARD",
-                transform = "lambda"),
-    error = function(e) e
+    # Plot title includes:
+    # gene symbol
+    # D-statistic
+    # adjusted p-value
+    main = paste0(
+      "Tree for ",
+      symbol_g,
+      "   (D = ",
+      round(D_g, 7),
+      ") (P = ",
+      round(P, 6),
+      ")"
+    )
   )
   
-  # 6. Skip if there was an error
-  if (inherits(fit_lambda, "error")) {
-    next
-  }
-  
-  # 7. Safely extract lambda and loglik; skip if they’re missing/empty
-  lambda_val <- fit_lambda$opt$lambda
-  loglik_val <- fit_lambda$loglik
-  
-  if (is.null(lambda_val) || length(lambda_val) == 0 ||
-      is.null(loglik_val) || length(loglik_val) == 0) {
-    next
-  }
-  
-  lambda_val <- as.numeric(lambda_val[1])
-  loglik_val <- as.numeric(loglik_val[1])
-  
-  # 8. Store result row
-  lambda_results_list[[idx]] <- data.frame(
-    gene         = g,
-    lambda       = lambda_val,
-    loglik       = loglik_val,
-    n_species    = n_species,
-    prop_present = prop_present,
-    stringsAsFactors = FALSE
+  # Add legend explaining color coding
+  legend(
+    "topleft",
+    legend = c("Trait = 0", "Trait = 1"),
+    col = c("red", "blue"),
+    pch = 19,
+    pt.cex = 1.2,
+    bty = "n"
   )
-  
-  idx <- idx + 1
 }
 
-# 9. Bind everything into a single data frame
-lambda_results <- do.call(rbind, lambda_results_list[1:(idx - 1)])
+# Close the PDF device and save the file
+dev.off()
 
 
-q <- binary_data_wide %>% 
-  dplyr::select(species, FBgn0004170)
+
+# Prioritization --------------------------------------------------------------
+# Compare rankings across different criteria and create a combined ranking score.
+
+# Define how many top-ranked genes to keep from each ranking method
+top_n <- 600
+
+# Select the top 600 genes ranked by highest proportion of 1s (n1_prop)
+# Pull only the gene symbols into a vector
+top_n1prop <- ordered_genes_n1prop %>%
+  dplyr::slice_head(n = top_n) %>%
+  dplyr::pull(symbol.x)
+
+# Select the top 600 genes ranked by most negative D-statistic
+# Pull only the gene symbols into a vector
+top_D <- ordered_genes_D %>%
+  dplyr::slice_head(n = top_n) %>%
+  dplyr::pull(symbol.x)
+
+# Find genes shared between both ranking methods
+# intersect() identifies overlapping genes
+# Reduce() allows intersect to work across a list of vectors
+top_in_all_3 <- Reduce(intersect, list(top_n1prop, top_D))
+
+# Convert overlapping gene symbols into a dataframe
+top_in_all_3_df <- data.frame(symbol.x = top_in_all_3)
+
+# View dataframe of genes shared between ranking methods
+top_in_all_3_df
+
+
+# Create a combined ranking system using both:
+# 1. D-statistic ranking
+# 2. Proportion of 1s ranking
+ranked_genes <- negative_d %>%
+  
+  # Add ranking columns
+  dplyr::mutate(
+    
+    # Rank genes by D-statistic
+    # Lower (more negative) D values receive better ranks
+    # ties.method = "average" assigns tied values the average rank
+    rank_D = rank(D, ties.method = "average"),
+    
+    # Rank genes by proportion of 1s
+    # Negative sign is used so larger n1_prop values rank higher
+    rank_n1 = rank(-n1_prop, ties.method = "average"),
+    
+    # Compute an overall combined ranking score
+    # Lower combined_rank values indicate genes that rank well in both metrics
+    combined_rank = (rank_D + rank_n1)/2
+  ) %>%
+  
+  # Sort genes from best combined rank to worst
+  dplyr::arrange(combined_rank)
