@@ -51,7 +51,7 @@ TAGteam_project_MegAdams/
 │
 │   ├── main.sh # Main script
 │   ├── vis.rmd # Visualization script
-│   ├── gene_name # working directory
+│   ├── gene_name # Working directory
 │   ├── visualizations # .png visualizations
 │   └── README.md
 │
@@ -60,12 +60,16 @@ TAGteam_project_MegAdams/
 │   Fall 2025 and Spring 2026 phylogenetic signal analyses using binary
 │   TAGteam motif presence/absence data
 │
-│   ├── binary_data/ # Contains binary TAGteam data
-│   ├── phylo_d_pipeline/
-│   ├── candidate_rankings/
-│   └── tree_visualizations/
+│   ├── tree_visualizations # Ranked phylogenetic tree visualizations for candidate genes
+│   ├── d_stat_pipeline.R/ # Main R script for D-statistic analysis pipeline
+│   ├── D_stat_results.csv/ # Output table containing D-statistic results and significance values
+│   ├── hog_tree.nw/ # Phylogenetic tree in Newick format
+│   ├── tageteam-binary-df-rbbpass_full.csv/ # Original binary motif presence/absence dataset
+│   ├── txid_gnid_dictionary.fasta/ # FASTA dictionary mapping transcript IDs to gene IDs
+│   ├── histogram.png/ # Histogram visualization
+│   ├── heatmap.pdf/ # Heatmap visualization
+│   └── README.md
 │
 └── results/
-    Final processed outputs, ranked candidate genes,
-    summary statistics, and figures
+
 ```
